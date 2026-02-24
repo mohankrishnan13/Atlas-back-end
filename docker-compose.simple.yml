@@ -1,0 +1,43 @@
+version: '3.8'
+services:
+  # ATLAS Backend Service
+  atlas-backend:
+    build:
+      context: ./atlas-backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - APP_NAME=ATLAS
+      - APP_ENV=development
+      - DEBUG=true
+      - ELASTIC_HOST=http://localhost:9200
+      - ELASTIC_USERNAME=elastic
+      - ELASTIC_PASSWORD=changeme
+      - REDIS_HOST=localhost
+      - REDIS_PORT=6379
+      - OLLAMA_BASE_URL=http://localhost:11434
+      - WAZUH_API_URL=https://localhost:55000
+    restart: unless-stopped
+    networks:
+      - atlas-network
+
+  # ATLAS Frontend Service
+  atlas-frontend:
+    build:
+      context: ./atlas-fron-end
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - ATLAS_BACKEND_URL=http://atlas-backend:8000
+      - NODE_ENV=production
+    depends_on:
+      - atlas-backend
+    restart: unless-stopped
+    networks:
+      - atlas-network
+
+networks:
+  atlas-network:
+    driver: bridge

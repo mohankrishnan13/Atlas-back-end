@@ -1,0 +1,69 @@
+version: '3.8'
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: atlas_db
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.10.2
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+
+  # ATLAS Backend Service
+  atlas-backend:
+    build:
+      context: ./atlas-backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - APP_NAME=ATLAS
+      - APP_ENV=development
+      - DEBUG=true
+      - ELASTIC_HOST=http://elasticsearch:9200
+      - ELASTIC_USERNAME=elastic
+      - ELASTIC_PASSWORD=changeme
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - OLLAMA_BASE_URL=http://localhost:11434
+      - WAZUH_API_URL=https://localhost:55000
+    depends_on:
+      - elasticsearch
+      - redis
+    restart: unless-stopped
+    networks:
+      - atlas-network
+
+  # ATLAS Frontend Service
+  atlas-frontend:
+    build:
+      context: ./atlas-fron-end
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - ATLAS_BACKEND_URL=http://atlas-backend:8000
+      - NODE_ENV=production
+    depends_on:
+      - atlas-backend
+    restart: unless-stopped
+    networks:
+      - atlas-network
+
+networks:
+  atlas-network:
+    driver: bridge
