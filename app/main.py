@@ -22,11 +22,13 @@ from fastapi.responses import JSONResponse
 from app.api import routes_dashboard, routes_incidents, routes_settings
 from app.core.config import get_settings
 from app.integrations.elastic_client import ElasticClient
+from app.integrations.redis_client import RedisClient
 from app.integrations.llm_copilot import AICopilotAnalyst
 from app.integrations.wazuh_client import WazuhClient
 from app.ml.anomaly_engine import AnomalyDetector
 from app.services.incident_service import IncidentService
 from app.services.risk_manager import ProgressiveContainmentManager
+from app.middleware.logging import DataCollectionMiddleware
 
 logging.basicConfig(
     level=logging.INFO,
@@ -40,6 +42,7 @@ settings = get_settings()
 # These are initialized once at startup and shared across all requests.
 
 elastic_client: ElasticClient = None
+redis_client: RedisClient = None
 wazuh_client: WazuhClient = None
 copilot: AICopilotAnalyst = None
 anomaly_detector: AnomalyDetector = None
@@ -54,7 +57,7 @@ async def lifespan(app: FastAPI):
     Async context manager for application startup and shutdown.
     Preferred over deprecated @app.on_event handlers in FastAPI 0.95+.
     """
-    global elastic_client, wazuh_client, copilot, anomaly_detector, risk_manager
+    global elastic_client, redis_client, wazuh_client, copilot, anomaly_detector, risk_manager
 
     logger.info(f"Starting {settings.app_name} backend...")
 
@@ -67,6 +70,13 @@ async def lifespan(app: FastAPI):
         )
     else:
         logger.info("Elasticsearch connection established.")
+
+    redis_client = RedisClient()
+    await redis_client.connect()
+    if await redis_client.is_connected():
+        logger.info("Redis connection established.")
+    else:
+        logger.warning("Redis unavailable. Real-time metrics will be limited.")
 
     wazuh_client = WazuhClient()
     copilot = AICopilotAnalyst()
@@ -82,16 +92,14 @@ async def lifespan(app: FastAPI):
         )
 
     # ── Initialize services ──
-    # Redis client would be injected here in production:
-    # redis = aioredis.from_url(f"redis://{settings.redis_host}:{settings.redis_port}")
     risk_manager = ProgressiveContainmentManager(
-        redis_client=None,  # Replace with real redis client in production
+        redis_client=redis_client,
         wazuh_client=wazuh_client,
     )
 
     # ── Inject dependencies into routers ──
-    routes_dashboard.init_dependencies(elastic_client, anomaly_detector)
-    routes_incidents.init_dependencies(elastic_client, copilot, risk_manager)
+    routes_dashboard.init_dependencies(elastic_client, redis_client, anomaly_detector)
+    routes_incidents.init_dependencies(elastic_client, redis_client, copilot, risk_manager)
 
     logger.info(f"{settings.app_name} startup complete. ENV: {settings.app_env}")
 
@@ -100,6 +108,8 @@ async def lifespan(app: FastAPI):
     # ── Shutdown: gracefully close connection pools ──
     logger.info(f"Shutting down {settings.app_name}...")
     await elastic_client.close()
+    if redis_client:
+        await redis_client.close()
     await wazuh_client.close()
     await copilot.close()
     logger.info("All connections closed. Shutdown complete.")
@@ -128,6 +138,21 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ── Data Collection Middleware ─────────────────────────────────────────────────────
+# This must be added after CORS but before routers
+def add_data_collection_middleware():
+    """Add data collection middleware if clients are available."""
+    if elastic_client and redis_client:
+        app.add_middleware(DataCollectionMiddleware, 
+                        elastic_client=elastic_client, 
+                        redis_client=redis_client)
+        logger.info("Data collection middleware enabled")
+    else:
+        logger.warning("Data collection middleware disabled (missing clients)")
+
+# We'll add this after the app is fully initialized
+add_data_collection_middleware()
 
 # ── Routers ───────────────────────────────────────────────────────────────────
 app.include_router(routes_dashboard.router)
