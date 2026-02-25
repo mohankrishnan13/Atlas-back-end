@@ -99,7 +99,7 @@ async def lifespan(app: FastAPI):
 
     # ── Inject dependencies into routers ──
     routes_dashboard.init_dependencies(elastic_client, redis_client, anomaly_detector)
-    routes_incidents.init_dependencies(elastic_client, redis_client, copilot, risk_manager)
+    routes_incidents.init_dependencies(elastic_client, copilot, risk_manager)
 
     logger.info(f"{settings.app_name} startup complete. ENV: {settings.app_env}")
 
