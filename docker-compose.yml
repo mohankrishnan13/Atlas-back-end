@@ -21,7 +21,7 @@ services:
       - xpack.security.enabled=false
       - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
     ports:
-      - "9200:9200"
+      - "9201:9200"
 
   # ATLAS Backend Service
   atlas-backend:
@@ -34,7 +34,7 @@ services:
       - APP_NAME=ATLAS
       - APP_ENV=development
       - DEBUG=true
-      - ELASTIC_HOST=http://elasticsearch:9200
+      - ELASTIC_HOST=http://elasticsearch:9201
       - ELASTIC_USERNAME=elastic
       - ELASTIC_PASSWORD=changeme
       - REDIS_HOST=redis
