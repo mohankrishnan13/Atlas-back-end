@@ -20,7 +20,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api import routes_dashboard, routes_incidents, routes_settings
+from app.api.routes_auth import router as auth_router
 from app.core.config import get_settings
+from app.db.database import init_db
 from app.integrations.elastic_client import ElasticClient
 from app.integrations.redis_client import RedisClient
 from app.integrations.llm_copilot import AICopilotAnalyst
@@ -60,6 +62,13 @@ async def lifespan(app: FastAPI):
     global elastic_client, redis_client, wazuh_client, copilot, anomaly_detector, risk_manager
 
     logger.info(f"Starting {settings.app_name} backend...")
+
+    # ── Initialize PostgreSQL (create tables if not exists) ──
+    try:
+        await init_db()
+        logger.info("PostgreSQL database initialized.")
+    except Exception as e:
+        logger.error(f"Database initialization failed: {e}. Auth endpoints will be unavailable.")
 
     # ── Initialize integrations ──
     elastic_client = ElasticClient()
@@ -101,6 +110,12 @@ async def lifespan(app: FastAPI):
     routes_dashboard.init_dependencies(elastic_client, redis_client, anomaly_detector)
     routes_incidents.init_dependencies(elastic_client, copilot, risk_manager)
 
+    # ── Store clients in app.state for middleware lazy access ──
+    # DataCollectionMiddleware reads from app.state at request time,
+    # so it always gets the initialized clients regardless of startup order.
+    app.state.elastic_client = elastic_client
+    app.state.redis_client = redis_client
+
     logger.info(f"{settings.app_name} startup complete. ENV: {settings.app_env}")
 
     yield  # ── Application runs ──
@@ -140,21 +155,14 @@ app.add_middleware(
 )
 
 # ── Data Collection Middleware ─────────────────────────────────────────────────────
-# This must be added after CORS but before routers
-def add_data_collection_middleware():
-    """Add data collection middleware if clients are available."""
-    if elastic_client and redis_client:
-        app.add_middleware(DataCollectionMiddleware, 
-                        elastic_client=elastic_client, 
-                        redis_client=redis_client)
-        logger.info("Data collection middleware enabled")
-    else:
-        logger.warning("Data collection middleware disabled (missing clients)")
-
-# We'll add this after the app is fully initialized
-add_data_collection_middleware()
+# Registered unconditionally here. The middleware reads elastic/redis clients from
+# app.state at request time (populated during lifespan startup), so it's safe to
+# register before lifespan runs. This avoids the race condition where clients are
+# None at module load time.
+app.add_middleware(DataCollectionMiddleware)
 
 # ── Routers ───────────────────────────────────────────────────────────────────
+app.include_router(auth_router)
 app.include_router(routes_dashboard.router)
 app.include_router(routes_incidents.router)
 app.include_router(routes_settings.router)

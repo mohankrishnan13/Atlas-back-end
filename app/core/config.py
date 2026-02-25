@@ -16,6 +16,17 @@ class Settings(BaseSettings):
     app_env: str = "development"
     debug: bool = True
 
+    # PostgreSQL
+    database_url: str = "postgresql+asyncpg://admin:password@localhost:5432/atlas_db"
+
+    # JWT Authentication
+    # SECURITY: Change jwt_secret_key to a strong random value in production.
+    # Generate one with: python -c "import secrets; print(secrets.token_hex(32))"
+    # Never commit a real secret to version control.
+    jwt_secret_key: str = "change-me-in-production-use-secrets-token-hex-32"
+    jwt_algorithm: str = "HS256"
+    jwt_expire_hours: int = 2
+
     # Elasticsearch
     elastic_host: str = "http://localhost:9201"
     elastic_username: str = "elastic"

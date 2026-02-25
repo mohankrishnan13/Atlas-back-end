@@ -138,7 +138,7 @@ class ProgressiveContainmentManager:
     async def list_contained_ips(self) -> list:
         """Returns all IPs currently under any form of containment."""
         if self._redis:
-            # Scan for all status keys
+            # scan_iter yields str keys (decode_responses=True) — no .decode() needed
             keys = []
             async for key in self._redis.scan_iter("*:status"):
                 keys.append(key)
@@ -146,17 +146,15 @@ class ProgressiveContainmentManager:
             for key in keys:
                 status = await self._redis.get(key)
                 if status and status != ContainmentStatus.NONE:
-                    # Parse ip:app from key
-                    parts = key.decode().rsplit(":status", 1)[0].rsplit(":", 1)
+                    # key format: "{ip}:{app}:status"
+                    base = key.rsplit(":status", 1)[0]
+                    parts = base.rsplit(":", 1)
                     if len(parts) == 2:
-                        results.append({"ip": parts[0], "app": parts[1], "status": status.decode()})
+                        results.append({"ip": parts[0], "app": parts[1], "status": status})
             return results
         else:
             return [
-                {
-                    "key": k,
-                    "status": v,
-                }
+                {"key": k, "status": v}
                 for k, v in self._state.items()
                 if k.endswith(":status") and v != ContainmentStatus.NONE
             ]
@@ -298,13 +296,14 @@ class ProgressiveContainmentManager:
             # Check if window expired
             window_end = await self._redis.get(window_key)
             if window_end:
-                window_end_dt = datetime.fromisoformat(window_end.decode())
+                # decode_responses=True means window_end is already a str — no .decode() needed
+                window_end_dt = datetime.fromisoformat(window_end)
                 if datetime.utcnow() > window_end_dt:
                     await self._redis.delete(count_key, window_key, f"{key_prefix}:status")
 
             count = await self._redis.incr(count_key)
             if count == 1:
-                # First anomaly in window — set expiry
+                # First anomaly in window — set expiry on both the count key and window marker
                 window_end_dt = datetime.utcnow() + timedelta(minutes=self.WINDOW_DURATION_MINUTES)
                 await self._redis.set(window_key, window_end_dt.isoformat())
                 await self._redis.expire(count_key, self.WINDOW_DURATION_MINUTES * 60)
@@ -337,17 +336,19 @@ class ProgressiveContainmentManager:
     async def _get_status(self, key_prefix: str) -> str:
         status_key = f"{key_prefix}:status"
         if self._redis:
+            # decode_responses=True — value is already a str, no .decode() needed
             val = await self._redis.get(status_key)
-            return val.decode() if val else ContainmentStatus.NONE
+            return val if val else ContainmentStatus.NONE
         return self._state.get(status_key, ContainmentStatus.NONE)
 
     async def _set_status(self, key_prefix: str, status: ContainmentStatus) -> None:
         status_key = f"{key_prefix}:status"
         if self._redis:
+            # RedisClient.set() uses `expire` param, not `ex`
             await self._redis.set(
                 status_key,
                 status,
-                ex=self.WINDOW_DURATION_MINUTES * 60,
+                expire=self.WINDOW_DURATION_MINUTES * 60,
             )
         else:
             self._state[status_key] = status

@@ -10,6 +10,8 @@ Routes remain thin by design: validation in → service call → validated respo
 
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta
+import logging
+import random
 from fastapi import APIRouter, Depends, HTTPException, Query
 from app.integrations.elastic_client import ElasticClient
 from app.integrations.redis_client import RedisClient
@@ -752,5 +754,4 @@ async def get_incidents_data(
         }
 
 
-import logging
 logger = logging.getLogger(__name__)

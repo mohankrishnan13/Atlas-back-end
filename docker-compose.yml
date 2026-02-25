@@ -34,7 +34,11 @@ services:
       - APP_NAME=ATLAS
       - APP_ENV=development
       - DEBUG=true
-      - ELASTIC_HOST=http://elasticsearch:9201
+      - DATABASE_URL=postgresql+asyncpg://admin:password@postgres:5432/atlas_db
+      - JWT_SECRET_KEY=change-me-generate-with-secrets-token-hex-32
+      - JWT_ALGORITHM=HS256
+      - JWT_EXPIRE_HOURS=2
+      - ELASTIC_HOST=http://elasticsearch:9200
       - ELASTIC_USERNAME=elastic
       - ELASTIC_PASSWORD=changeme
       - REDIS_HOST=redis
@@ -42,6 +46,7 @@ services:
       - OLLAMA_BASE_URL=http://localhost:11434
       - WAZUH_API_URL=https://localhost:55000
     depends_on:
+      - postgres
       - elasticsearch
       - redis
     restart: unless-stopped

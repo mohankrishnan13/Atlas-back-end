@@ -201,3 +201,75 @@ class ContainmentRuleUpdate(BaseModel):
     soft_limit_threshold: Optional[int] = None
     hard_block_threshold: Optional[int] = None
     enabled: Optional[bool] = None
+
+
+# ─────────────────────────────────────────────
+# Authentication Schemas
+# ─────────────────────────────────────────────
+
+class SignupRequest(BaseModel):
+    """
+    Registration payload. Password is accepted as plaintext here and
+    immediately hashed in the route — it is NEVER persisted in plaintext.
+    """
+    email: str = Field(..., pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$", description="Must be a valid email address")
+    full_name: str = Field(..., min_length=2, max_length=255)
+    password: str = Field(..., min_length=8, description="Minimum 8 characters")
+    role: str = Field(default="analyst", description="analyst | lead | admin")
+
+
+class SignupResponse(BaseModel):
+    """Returned on successful account creation (201 Created)."""
+    message: str
+    email: str
+    role: str
+
+
+class LoginRequest(BaseModel):
+    """Standard email + password login payload."""
+    email: str
+    password: str
+
+
+class TokenResponse(BaseModel):
+    """
+    OAuth2-style bearer token response.
+    `token_type` is always "bearer" — clients use this to construct the
+    `Authorization: Bearer <token>` header for protected endpoints.
+    """
+    access_token: str
+    token_type: str = "bearer"
+    role: str
+    full_name: str
+
+
+class ForgotPasswordRequest(BaseModel):
+    """Email address to send the password reset link to."""
+    email: str = Field(..., pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+class ForgotPasswordResponse(BaseModel):
+    """
+    Generic success response — always returned regardless of whether
+    the email exists in the database.
+
+    Why always 200: Returning 404 when an email isn't found leaks which
+    accounts exist (user enumeration attack). A generic success response
+    forces attackers to try logging in to know if an account is valid.
+    """
+    message: str
+
+
+class UserProfile(BaseModel):
+    """Public-safe user profile — never includes hashed_password."""
+    id: int
+    email: str
+    full_name: str
+    role: str
+    is_active: bool
+    last_login: Optional[datetime]
+    failed_login_attempts: int
+    created_at: datetime
+
+    class Config:
+        from_attributes = True

@@ -9,6 +9,11 @@ uvicorn[standard]==0.29.0
 pydantic==2.7.1
 pydantic-settings==2.2.1
 
+# PostgreSQL (async)
+sqlalchemy==2.0.30
+asyncpg==0.29.0            # Async PostgreSQL driver for SQLAlchemy
+alembic==1.13.1            # Database migrations (production alternative to create_all)
+
 # Elasticsearch
 elasticsearch[async]==8.13.0
 
@@ -23,10 +28,11 @@ numpy==1.26.4
 # HTTP Client (for Ollama + Wazuh)
 httpx==0.27.0
 
-# Security / Auth (for production)
-python-jose[cryptography]==3.3.0
-passlib[bcrypt]==1.7.4
-python-multipart==0.0.9
+# Authentication & Security
+PyJWT==2.8.0               # JWT signing and verification (HS256 / RS256)
+passlib[bcrypt]==1.7.4     # bcrypt password hashing with constant-time compare
+bcrypt==4.1.3              # Explicit bcrypt backend for passlib
+python-multipart==0.0.9   # Required for FastAPI form data parsing
 
 # Logging
 python-json-logger==2.0.7
@@ -34,4 +40,4 @@ python-json-logger==2.0.7
 # Testing
 pytest==8.2.0
 pytest-asyncio==0.23.6
-httpx==0.27.0  # also used as async test client
+httpx==0.27.0              # also used as async test client

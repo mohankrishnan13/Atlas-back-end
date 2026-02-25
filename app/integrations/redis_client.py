@@ -256,6 +256,58 @@ class RedisClient:
             return None
 
     # ─────────────────────────────────────────────
+    # Key Management (used by risk_manager)
+    # ─────────────────────────────────────────────
+
+    async def delete(self, *keys: str) -> Optional[int]:
+        """Delete one or more keys. Returns number of keys deleted."""
+        if not self._client:
+            return None
+        try:
+            return await self._client.delete(*keys)
+        except Exception as e:
+            logger.error(f"Failed to delete keys {keys}: {e}")
+            return None
+
+    async def expire(self, key: str, seconds: int) -> bool:
+        """Set a key's TTL in seconds."""
+        if not self._client:
+            return False
+        try:
+            return await self._client.expire(key, seconds)
+        except Exception as e:
+            logger.error(f"Failed to set expire on {key}: {e}")
+            return False
+
+    async def incr(self, key: str) -> Optional[int]:
+        """
+        Atomically increment a key by 1 and return the new value.
+        Creates the key with value 1 if it doesn't exist.
+        Used by risk_manager for rolling anomaly counters.
+        """
+        if not self._client:
+            return None
+        try:
+            return await self._client.incr(key)
+        except Exception as e:
+            logger.error(f"Failed to incr key {key}: {e}")
+            return None
+
+    async def scan_iter(self, match: str = "*"):
+        """
+        Async generator that scans all keys matching a pattern.
+        Uses Redis SCAN under the hood (non-blocking, cursor-based).
+        Used by risk_manager to enumerate all tracked IP status keys.
+        """
+        if not self._client:
+            return
+        try:
+            async for key in self._client.scan_iter(match=match):
+                yield key
+        except Exception as e:
+            logger.error(f"Failed to scan keys matching {match}: {e}")
+
+    # ─────────────────────────────────────────────
     # Analytics and Metrics
     # ─────────────────────────────────────────────
 
