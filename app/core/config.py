@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     debug: bool = True
 
     # Elasticsearch
-    elastic_host: str = "http://localhost:9200"
+    elastic_host: str = "http://localhost:9201"
     elastic_username: str = "elastic"
     elastic_password: str = "changeme"
     elastic_index_logs: str = "atlas-logs-*"

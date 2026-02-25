@@ -72,7 +72,7 @@ APP_ENV=development
 DEBUG=true
 
 # Elasticsearch
-ELASTIC_HOST=http://localhost:9200
+ELASTIC_HOST=http://localhost:9201
 ELASTIC_USERNAME=elastic
 ELASTIC_PASSWORD=changeme
 
@@ -121,7 +121,7 @@ docker-compose down
 - **Frontend Dashboard**: http://localhost:3000
 - **Backend API**: http://localhost:8000
 - **API Documentation**: http://localhost:8000/docs
-- **Elasticsearch**: http://localhost:9200
+- **Elasticsearch**: http://localhost:9201
 - **Health Check**: http://localhost:8000/health
 
 ## 📊 Dashboard Features
