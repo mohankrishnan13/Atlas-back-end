@@ -30,7 +30,7 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - ATLAS_BACKEND_URL=http://atlas-backend:8000
+      - NEXT_PUBLIC_ATLAS_BACKEND_URL=http://atlas-backend:8000
       - NODE_ENV=production
     depends_on:
       - atlas-backend

@@ -94,7 +94,7 @@ WAZUH_PASSWORD=wazuh_password
 Create `atlas-fron-end/.env`:
 ```bash
 # Backend API URL
-ATLAS_BACKEND_URL=http://localhost:8000
+NEXT_PUBLIC_ATLAS_BACKEND_URL=http://localhost:8000
 
 # Next.js
 NODE_ENV=development
