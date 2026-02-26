@@ -3,8 +3,8 @@ services:
   postgres:
     image: postgres:15
     environment:
-      POSTGRES_USER: admin
-      POSTGRES_PASSWORD: password
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: root!123
       POSTGRES_DB: atlas_db
     ports:
       - "5432:5432"
@@ -34,7 +34,7 @@ services:
       - APP_NAME=ATLAS
       - APP_ENV=development
       - DEBUG=true
-      - DATABASE_URL=postgresql+asyncpg://admin:password@postgres:5432/atlas_db
+      - DATABASE_URL=postgresql+asyncpg://postgres:root!123@postgres:5432/atlas_db
       - JWT_SECRET_KEY=change-me-generate-with-secrets-token-hex-32
       - JWT_ALGORITHM=HS256
       - JWT_EXPIRE_HOURS=2

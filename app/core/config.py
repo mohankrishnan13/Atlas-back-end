@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     debug: bool = True
 
     # PostgreSQL
-    database_url: str = "postgresql+asyncpg://admin:password@localhost:5432/atlas_db"
+    database_url: str = "postgresql+asyncpg://postgres:root!123@localhost:5432/atlas_db"
 
     # JWT Authentication
     # SECURITY: Change jwt_secret_key to a strong random value in production.
