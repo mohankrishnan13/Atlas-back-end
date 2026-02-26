@@ -6,13 +6,13 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: root!123
       POSTGRES_DB: atlas_db
-    ports:
-      - "5432:5432"
+    networks:
+      - atlas-network
 
   redis:
     image: redis:alpine
-    ports:
-      - "6379:6379"
+    networks:
+      - atlas-network
 
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.10.2
@@ -22,6 +22,8 @@ services:
       - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
     ports:
       - "9201:9200"
+    networks:
+      - atlas-network
 
   # ATLAS Backend Service
   atlas-backend:
