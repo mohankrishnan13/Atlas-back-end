@@ -3,17 +3,23 @@ api/routes_incidents.py
 
 Incident management endpoints and the AI Copilot investigation trigger.
 
-The /investigate endpoint is the core SOC workflow integration point:
-Frontend clicks "Investigate" on an incident → this endpoint orchestrates:
-  1. Fetch full incident data + 15-min log context from Elasticsearch
-  2. Send enriched context to local LLM via AICopilotAnalyst
-  3. Return structured SOC briefing to frontend for display
+New endpoint added for prototype phase:
+    GET /api/incidents/recent
+    — Combines the most severe anomalies from Apache logs and Syslog/Windows
+      Event Logs into a single prioritised incident feed. This is the data
+      that will be fed into Ollama for AI threat briefing.
 
-This orchestration is intentionally in the route layer because it coordinates
-multiple services without containing business logic itself.
+Original endpoints preserved:
+    GET    /api/v1/incidents               — paginated incident list (ES-backed)
+    GET    /api/v1/incidents/{id}          — single incident detail
+    POST   /api/v1/incidents/{id}/investigate — AI Copilot analysis
+    PUT    /api/v1/incidents/{id}/status   — analyst status update
+    POST   /api/v1/incidents/{id}/containment/reset
+    GET    /api/v1/incidents/ip/{ip}/status
 """
 
 import logging
+from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Body
@@ -26,33 +32,50 @@ from app.models.schemas import (
     IncidentListResponse,
     IncidentResponse,
     IncidentStatus,
+    RecentIncident,
+    RecentIncidentsResponse,
     SOCBriefing,
     SOCBriefingRequest,
 )
 from app.services.incident_service import IncidentService
 from app.services.risk_manager import ProgressiveContainmentManager
+from app.utils.log_parser import (
+    aggregate_endpoint_alerts,
+    aggregate_network_metrics,
+    build_recent_incidents,
+    fetch_recent_network_logs,
+    fetch_recent_syslog_events,
+    fetch_recent_windows_events,
+)
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/v1/incidents", tags=["Incidents"])
+# ── Two routers with different prefixes ───────────────────────────────────────
+# router_v1   — original /api/v1/incidents  (ES-backed production routes)
+# router_proto — new /api/incidents         (prototype log-file routes)
+router_v1    = APIRouter(prefix="/api/v1/incidents", tags=["Incidents"])
+router_proto = APIRouter(prefix="/api/incidents",    tags=["Incidents (Prototype)"])
 
-# ─── Module-level singletons (initialized from main.py on startup) ────────────
+# For backward compatibility we also export `router` pointing at router_v1
+router = router_v1
 
-_elastic: Optional[ElasticClient] = None
-_copilot: Optional[AICopilotAnalyst] = None
-_risk_manager: Optional[ProgressiveContainmentManager] = None
-_incident_service: Optional[IncidentService] = None
+# ─── Module-level singletons ─────────────────────────────────────────────────
+
+_elastic:          Optional[ElasticClient]               = None
+_copilot:          Optional[AICopilotAnalyst]             = None
+_risk_manager:     Optional[ProgressiveContainmentManager] = None
+_incident_service: Optional[IncidentService]              = None
 
 
 def init_dependencies(
-    elastic: ElasticClient,
-    copilot: AICopilotAnalyst,
+    elastic:      ElasticClient,
+    copilot:      AICopilotAnalyst,
     risk_manager: ProgressiveContainmentManager,
 ) -> None:
     global _elastic, _copilot, _risk_manager, _incident_service
-    _elastic = elastic
-    _copilot = copilot
-    _risk_manager = risk_manager
+    _elastic          = elastic
+    _copilot          = copilot
+    _risk_manager     = risk_manager
     _incident_service = IncidentService(elastic)
 
 
@@ -80,104 +103,173 @@ def get_risk_manager() -> ProgressiveContainmentManager:
     return _risk_manager
 
 
-# ─── Routes ───────────────────────────────────────────────────────────────────
+# ─── Prototype route: /api/incidents/recent ───────────────────────────────────
 
-@router.get("", response_model=IncidentListResponse)
+@router_proto.get("/recent", response_model=RecentIncidentsResponse)
+async def get_recent_incidents(
+    hours: int = Query(
+        default=24,
+        ge=1,
+        le=168,
+        description="Look-back window in hours",
+    ),
+    limit: int = Query(
+        default=10,
+        ge=1,
+        le=50,
+        description="Maximum number of incidents to return",
+    ),
+) -> RecentIncidentsResponse:
+    """
+    Merges the most severe anomalies from Apache access logs (network layer)
+    and Linux Syslog / Windows Event Logs (endpoint layer) into a single
+    prioritised incident feed.
+
+    This endpoint is designed as the data source for the Ollama AI Threat
+    Briefing feature: the top-N events are returned in a structured format
+    that can be serialised directly into an LLM prompt for threat analysis.
+
+    Severity priority order: Critical > High > Medium  (Low events excluded)
+    Sources combined:
+        - Apache logs  → excessive requests, high error rate, server errors
+        - Linux Syslog → SSH brute force, auth failures, sudo failures, kernel panics
+        - Windows EVT  → logon failures (event IDs 529 / 4625), system errors
+
+    TODO [PRODUCTION]: Replace all fetch_recent_*() calls with ES queries:
+    e.g., elastic_client.search(index="atlas-logs-*", ...)
+    """
+    # ── Fetch from local log files ────────────────────────────────────────────
+    # TODO [PRODUCTION]: Replace local file parsing with Elasticsearch query.
+    # e.g., response = elastic_client.search(index="atlas-network-logs", ...)
+    network_records = []
+    try:
+        network_records = fetch_recent_network_logs(hours=hours)
+    except Exception as exc:
+        logger.error(f"[recent_incidents] Apache log read failed: {exc}")
+
+    # TODO [PRODUCTION]: Replace local file parsing with Elasticsearch query.
+    # e.g., response = elastic_client.search(index="atlas-syslog-*", ...)
+    syslog_records = []
+    try:
+        syslog_records = fetch_recent_syslog_events(hours=hours)
+    except Exception as exc:
+        logger.error(f"[recent_incidents] Syslog read failed: {exc}")
+
+    # TODO [PRODUCTION]: Replace local file parsing with Elasticsearch query.
+    # e.g., response = elastic_client.search(index="atlas-winevent-*", ...)
+    windows_records = []
+    try:
+        windows_records = fetch_recent_windows_events(hours=hours)
+    except Exception as exc:
+        logger.error(f"[recent_incidents] Windows event log read failed: {exc}")
+
+    # ── Aggregate each source ─────────────────────────────────────────────────
+    net_aggregated = aggregate_network_metrics(network_records, top_n=20)
+    ep_aggregated  = aggregate_endpoint_alerts(syslog_records, windows_records, top_n=100)
+
+    # ── Merge into unified incident list ──────────────────────────────────────
+    raw_incidents = build_recent_incidents(
+        network_anomalies=net_aggregated["anomalies"],
+        endpoint_alerts=ep_aggregated["alerts"],
+        top_n=limit,
+    )
+
+    incidents = [
+        RecentIncident(
+            id=inc["id"],
+            source=inc["source"],
+            event_type=inc["event_type"],
+            source_ip=inc.get("source_ip"),
+            username=inc.get("username"),
+            severity=inc["severity"],
+            timestamp=inc["timestamp"],
+            description=inc["description"],
+            raw_evidence=inc.get("raw_evidence", []),
+        )
+        for inc in raw_incidents
+    ]
+
+    logger.info(
+        f"[recent_incidents] Returning {len(incidents)} incidents "
+        f"(network: {len(net_aggregated['anomalies'])}, "
+        f"endpoint: {len(ep_aggregated['alerts'])} alerts combined)."
+    )
+
+    return RecentIncidentsResponse(
+        incidents=incidents,
+        total=len(incidents),
+        generated_at=datetime.utcnow().isoformat(),
+    )
+
+
+# ─── Original /api/v1/incidents routes (ES-backed) ───────────────────────────
+
+@router_v1.get("", response_model=IncidentListResponse)
 async def list_incidents(
-    status: Optional[str] = Query(None, description="Filter by incident status"),
+    status:     Optional[str] = Query(None, description="Filter by incident status"),
     risk_level: Optional[str] = Query(None, description="Filter by risk level"),
-    page: int = Query(1, ge=1),
-    size: int = Query(20, ge=1, le=100),
-    elastic: ElasticClient = Depends(get_elastic),
+    page:       int           = Query(1,  ge=1),
+    size:       int           = Query(20, ge=1, le=100),
+    elastic:    ElasticClient = Depends(get_elastic),
 ) -> IncidentListResponse:
-    """
-    Paginated list of all incidents.
-    Frontend SOC table view consumes this endpoint.
-    """
+    """Paginated list of all incidents. Frontend SOC table view."""
     result = await elastic.list_incidents(
         status=status, risk_level=risk_level, page=page, size=size
     )
     return IncidentListResponse(
         total=result["total"],
-        incidents=[
-            IncidentResponse(**i) for i in result["incidents"]
-        ],
+        incidents=[IncidentResponse(**i) for i in result["incidents"]],
     )
 
 
-@router.get("/{incident_id}", response_model=IncidentResponse)
+@router_v1.get("/{incident_id}", response_model=IncidentResponse)
 async def get_incident(
-    incident_id: str,
+    incident_id:      str,
     incident_service: IncidentService = Depends(get_incident_service),
 ) -> IncidentResponse:
     """Retrieve a single incident by ID."""
     data = await incident_service.get_incident_with_context(incident_id)
     if not data:
-        raise HTTPException(status_code=404, detail=f"Incident {incident_id} not found.")
-
-    # Strip log context from response (it's only needed for AI analysis)
+        raise HTTPException(404, f"Incident {incident_id} not found.")
     data.pop("recent_logs", None)
-    data.pop("log_count", None)
+    data.pop("log_count",   None)
     return IncidentResponse(**data)
 
 
-@router.post("/{incident_id}/investigate", response_model=SOCBriefing)
+@router_v1.post("/{incident_id}/investigate", response_model=SOCBriefing)
 async def investigate_incident(
-    incident_id: str,
-    request: SOCBriefingRequest = Body(default=SOCBriefingRequest(incident_id="")),
-    incident_service: IncidentService = Depends(get_incident_service),
-    copilot: AICopilotAnalyst = Depends(get_copilot),
+    incident_id:      str,
+    request:          SOCBriefingRequest = Body(default=SOCBriefingRequest(incident_id="")),
+    incident_service: IncidentService    = Depends(get_incident_service),
+    copilot:          AICopilotAnalyst   = Depends(get_copilot),
 ) -> SOCBriefing:
     """
-    AI-powered incident investigation endpoint.
-
-    This is the primary human-AI collaboration touchpoint in ATLAS:
-    1. SOC analyst clicks "Investigate" on a suspicious incident
-    2. We fetch the incident + 15 minutes of raw logs for context
-    3. The AI Copilot analyzes the data and returns a structured threat briefing
-    4. The frontend displays: threat summary, confidence, recommended action,
-       IoC indicators, and MITRE ATT&CK tactic mappings
-
-    Why we cap context at 15 minutes: This window is calibrated to the median
-    time-to-detect for modern attacks while keeping LLM token usage bounded.
-    Longer windows would exceed the model's context limit and degrade output quality.
-
-    The endpoint is intentionally slow (LLM inference takes 2-30s depending on
-    hardware) — the frontend should show a loading spinner and use this async.
+    AI-powered incident investigation.
+    1. Fetches incident + 15-min log context from Elasticsearch.
+    2. Sends enriched context to local LLM via AICopilotAnalyst.
+    3. Returns structured SOC threat briefing.
     """
     logger.info(f"AI investigation triggered for incident {incident_id}")
 
-    # Step 1: Retrieve enriched incident data with log context
     incident_data = await incident_service.get_incident_with_context(incident_id)
     if not incident_data:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Incident {incident_id} not found. Cannot initiate AI investigation.",
-        )
+        raise HTTPException(404, f"Incident {incident_id} not found.")
 
     log_count = incident_data.get("log_count", 0)
-    logger.info(
-        f"Sending {log_count} log events to AI Copilot for incident {incident_id}"
-    )
+    logger.info(f"Sending {log_count} log events to AI Copilot for incident {incident_id}")
 
-    # Step 2: Send to LLM Copilot for analysis
     briefing_data = await copilot.generate_investigation_summary(incident_data)
-
-    # Step 3: Return structured SOC briefing
     return SOCBriefing(**briefing_data)
 
 
-@router.put("/{incident_id}/status")
+@router_v1.put("/{incident_id}/status")
 async def update_incident_status(
-    incident_id: str,
-    status: IncidentStatus = Body(..., embed=True),
-    notes: str = Body("", embed=True),
+    incident_id:      str,
+    status:           IncidentStatus = Body(..., embed=True),
+    notes:            str            = Body("",  embed=True),
     incident_service: IncidentService = Depends(get_incident_service),
 ) -> dict:
-    """
-    Allows SOC analysts to manually update incident status (e.g., mark resolved).
-    Audit trail: status changes are preserved in the ES document history.
-    """
+    """Allows SOC analysts to manually update incident status."""
     if status == IncidentStatus.RESOLVED:
         success = await incident_service.mark_resolved(incident_id, notes=notes)
     else:
@@ -185,9 +277,8 @@ async def update_incident_status(
         if not existing:
             raise HTTPException(404, f"Incident {incident_id} not found.")
         existing.pop("recent_logs", None)
-        existing.pop("log_count", None)
+        existing.pop("log_count",   None)
         existing["status"] = status
-        from app.integrations.elastic_client import ElasticClient
         await _elastic.upsert_incident(incident_id, existing)
         success = True
 
@@ -196,46 +287,39 @@ async def update_incident_status(
     return {"incident_id": incident_id, "new_status": status, "updated": True}
 
 
-@router.post("/{incident_id}/containment/reset")
+@router_v1.post("/{incident_id}/containment/reset")
 async def reset_containment(
-    incident_id: str,
-    incident_service: IncidentService = Depends(get_incident_service),
-    risk_manager: ProgressiveContainmentManager = Depends(get_risk_manager),
+    incident_id:      str,
+    incident_service: IncidentService              = Depends(get_incident_service),
+    risk_manager:     ProgressiveContainmentManager = Depends(get_risk_manager),
 ) -> dict:
-    """
-    Resets progressive containment for an IP after analyst confirms false positive
-    or after remediation is complete. This lifts rate limits and unblocks IPs.
-    """
+    """Resets progressive containment after analyst confirms false positive."""
     incident = await incident_service.get_incident_with_context(incident_id)
     if not incident:
         raise HTTPException(404, f"Incident {incident_id} not found.")
 
-    ip = incident.get("source_ip")
+    ip  = incident.get("source_ip")
     app = incident.get("app_name")
-
     if not ip or not app:
         raise HTTPException(400, "Incident missing source_ip or app_name.")
 
     await risk_manager.reset_ip(ip, app)
     await incident_service.update_containment_status(incident_id, ContainmentStatus.NONE)
 
-    logger.info(f"Containment reset for {ip}:{app} by analyst action on incident {incident_id}.")
+    logger.info(f"Containment reset for {ip}:{app} on incident {incident_id}.")
     return {
-        "incident_id": incident_id,
-        "ip_address": ip,
-        "app_name": app,
+        "incident_id":       incident_id,
+        "ip_address":        ip,
+        "app_name":          app,
         "containment_reset": True,
     }
 
 
-@router.get("/ip/{ip_address}/status")
+@router_v1.get("/ip/{ip_address}/status")
 async def get_ip_containment_status(
     ip_address: str,
-    app_name: str = Query(..., description="Application name"),
+    app_name:   str                          = Query(..., description="Application name"),
     risk_manager: ProgressiveContainmentManager = Depends(get_risk_manager),
 ) -> dict:
-    """
-    Returns current containment state for an IP+app combination.
-    Used by API Gateway integration to check rate limit / block status.
-    """
+    """Returns current containment state for an IP+app combination."""
     return await risk_manager.get_ip_status(ip_address, app_name)
