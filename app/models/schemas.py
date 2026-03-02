@@ -204,72 +204,83 @@ class ContainmentRuleUpdate(BaseModel):
 
 
 # ─────────────────────────────────────────────
-# Authentication Schemas
+# Network Metrics  (routes_network.py)
 # ─────────────────────────────────────────────
 
-class SignupRequest(BaseModel):
-    """
-    Registration payload. Password is accepted as plaintext here and
-    immediately hashed in the route — it is NEVER persisted in plaintext.
-    """
-    email: str = Field(..., pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$", description="Must be a valid email address")
-    full_name: str = Field(..., min_length=2, max_length=255)
-    password: str = Field(..., min_length=8, description="Minimum 8 characters")
-    role: str = Field(default="analyst", description="analyst | lead | admin")
+class NetworkNode(BaseModel):
+    """A source IP node in the network traffic graph."""
+    id:            str
+    ip:            str
+    request_count: int
+    bytes_sent:    int
+    status:        str   = "normal"   # "normal" | "warning" | "blocked"
+    top_paths:     List[str] = Field(default_factory=list)
 
 
-class SignupResponse(BaseModel):
-    """Returned on successful account creation (201 Created)."""
-    message: str
-    email: str
-    role: str
+class NetworkAnomaly(BaseModel):
+    """A flagged anomaly detected from Apache/network logs."""
+    id:           str
+    source_ip:    str
+    anomaly_type: str     # "high_error_rate" | "excessive_requests" | "server_error"
+    request_count: int
+    error_count:  int
+    severity:     str     # "Low" | "Medium" | "High" | "Critical"
+    first_seen:   str
+    last_seen:    str
+    sample_paths: List[str] = Field(default_factory=list)
 
 
-class LoginRequest(BaseModel):
-    """Standard email + password login payload."""
-    email: str
-    password: str
+class NetworkMetricsResponse(BaseModel):
+    """Full response for GET /api/metrics/network"""
+    nodes:           List[NetworkNode]
+    anomalies:       List[NetworkAnomaly]
+    bandwidth_usage: Dict[str, Any]       # total bytes, hourly chart data, etc.
+    summary:         Dict[str, Any]       # total_requests, unique_ips, error_rate
 
 
-class TokenResponse(BaseModel):
-    """
-    OAuth2-style bearer token response.
-    `token_type` is always "bearer" — clients use this to construct the
-    `Authorization: Bearer <token>` header for protected endpoints.
-    """
-    access_token: str
-    token_type: str = "bearer"
-    role: str
-    full_name: str
+# ─────────────────────────────────────────────
+# Endpoint Security  (routes_endpoints.py)
+# ─────────────────────────────────────────────
+
+class EndpointAlert(BaseModel):
+    """A single security alert parsed from syslog / Windows event logs."""
+    id:              str
+    workstation_id:  str
+    alert_type:      str     # "ssh_brute_force" | "failed_login" | "system_error" etc.
+    source_ip:       Optional[str] = None
+    username:        Optional[str] = None
+    message:         str
+    severity:        str     # "Low" | "Medium" | "High" | "Critical"
+    timestamp:       str
+    raw_line:        Optional[str] = None
 
 
-class ForgotPasswordRequest(BaseModel):
-    """Email address to send the password reset link to."""
-    email: str = Field(..., pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+class EndpointMetricsResponse(BaseModel):
+    """Full response for GET /api/metrics/endpoints"""
+    alerts:           List[EndpointAlert]
+    summary:          Dict[str, Any]   # total_alerts, critical_count, affected_hosts
+    auth_failure_ips: List[Dict[str, Any]]   # top IPs causing auth failures
 
 
-class ForgotPasswordResponse(BaseModel):
-    """
-    Generic success response — always returned regardless of whether
-    the email exists in the database.
+# ─────────────────────────────────────────────
+# Recent Incidents for LLM feed  (routes_incidents.py)
+# ─────────────────────────────────────────────
 
-    Why always 200: Returning 404 when an email isn't found leaks which
-    accounts exist (user enumeration attack). A generic success response
-    forces attackers to try logging in to know if an account is valid.
-    """
-    message: str
+class RecentIncident(BaseModel):
+    """Combined critical event ready for LLM threat briefing."""
+    id:           str
+    source:       str   # "apache" | "syslog" | "windows_event"
+    event_type:   str
+    source_ip:    Optional[str] = None
+    username:     Optional[str] = None
+    severity:     str
+    timestamp:    str
+    description:  str
+    raw_evidence: List[str] = Field(default_factory=list)
 
 
-class UserProfile(BaseModel):
-    """Public-safe user profile — never includes hashed_password."""
-    id: int
-    email: str
-    full_name: str
-    role: str
-    is_active: bool
-    last_login: Optional[datetime]
-    failed_login_attempts: int
-    created_at: datetime
-
-    class Config:
-        from_attributes = True
+class RecentIncidentsResponse(BaseModel):
+    """Full response for GET /api/incidents/recent"""
+    incidents:   List[RecentIncident]
+    total:       int
+    generated_at: str
