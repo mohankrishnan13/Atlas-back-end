@@ -12,6 +12,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.api.routes_auth import router as auth_router
 from app.api import routes_dashboard, routes_settings
 from app.api.routes_incidents import (
     init_dependencies as incidents_init,
@@ -19,15 +20,20 @@ from app.api.routes_incidents import (
     router_proto      as incidents_router_proto,
 )
 from app.api import routes_network, routes_endpoints
+
 from app.core.config import get_settings
+from app.db.database import init_db   # ✅ ADD THIS
+
 from app.integrations.elastic_client import ElasticClient
 from app.integrations.redis_client import RedisClient
 from app.integrations.llm_copilot import AICopilotAnalyst
 from app.integrations.wazuh_client import WazuhClient
+
 from app.ml.anomaly_engine import AnomalyDetector
 from app.services.incident_service import IncidentService
 from app.services.risk_manager import ProgressiveContainmentManager
 from app.middleware.logging import DataCollectionMiddleware
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -53,16 +59,15 @@ risk_manager:     ProgressiveContainmentManager = None
 async def lifespan(app: FastAPI):
     """
     Initialises all service clients on startup and tears them down on shutdown.
-
-    FIX #3 — Clients are assigned to app.state here (after init) so the
-    already-registered DataCollectionMiddleware can access them lazily via
-    request.app.state on every request.
     """
     global elastic_client, redis_client, wazuh_client, copilot, anomaly_detector, risk_manager
 
     logger.info(f"Starting {settings.app_name} backend  [env: {settings.app_env}]")
 
-    # ── Elasticsearch ──
+    # ── Database (DEV MODE) ────────────────────────────────────────────────
+    await init_db()
+
+    # ── Elasticsearch ─────────────────────────────────────────────────────
     elastic_client = ElasticClient()
     es_ok = await elastic_client.ping()
     if es_ok:
@@ -73,7 +78,7 @@ async def lifespan(app: FastAPI):
             "until ES is available. Prototype log-file endpoints will still work."
         )
 
-    # ── Redis ──
+    # ── Redis ─────────────────────────────────────────────────────────────
     redis_client = RedisClient()
     await redis_client.connect()
     if await redis_client.is_connected():
@@ -81,11 +86,11 @@ async def lifespan(app: FastAPI):
     else:
         logger.warning("Redis unavailable. Real-time metrics will be limited.")
 
-    # ── Wazuh + LLM ──
+    # ── Wazuh + LLM ───────────────────────────────────────────────────────
     wazuh_client = WazuhClient()
     copilot      = AICopilotAnalyst()
 
-    # ── ML engine ──
+    # ── ML engine ─────────────────────────────────────────────────────────
     anomaly_detector = AnomalyDetector()
     if anomaly_detector.is_trained:
         logger.info(f"Anomaly model loaded. Trained at: {anomaly_detector._trained_at}")
@@ -95,20 +100,17 @@ async def lifespan(app: FastAPI):
             "after ingesting historical logs."
         )
 
-    # ── Services ──
+    # ── Services ──────────────────────────────────────────────────────────
     risk_manager = ProgressiveContainmentManager(
         redis_client=redis_client,
         wazuh_client=wazuh_client,
     )
 
-    # ── Inject dependencies into ES-backed routers ──
+    # ── Inject dependencies into routers ──────────────────────────────────
     routes_dashboard.init_dependencies(elastic_client, redis_client, anomaly_detector)
     incidents_init(elastic_client, copilot, risk_manager)
 
-    # ── FIX #3: Expose initialised clients on app.state ──────────────────────
-    # The DataCollectionMiddleware (registered below at build time) reads these
-    # lazily on every request via request.app.state.  They must be set here,
-    # after init, NOT at module load time (when they are still None).
+    # ── Expose on app.state for middleware ────────────────────────────────
     app.state.elastic_client = elastic_client
     app.state.redis_client   = redis_client
 
@@ -116,7 +118,7 @@ async def lifespan(app: FastAPI):
 
     yield  # ── Application runs ──
 
-    # ── Shutdown ──
+    # ── Shutdown ──────────────────────────────────────────────────────────
     logger.info(f"Shutting down {settings.app_name}...")
     await elastic_client.close()
     if redis_client:
@@ -147,23 +149,25 @@ app = FastAPI(
 # ── CORS ──────────────────────────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"] if settings.debug else ["https://your-soc-frontend.com"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ── Data Collection Middleware ─────────────────────────────────────────────────
-# Register at app-build time; reads clients lazily from app.state on each request
+# ── Data Collection Middleware ────────────────────────────────────────────────
 app.add_middleware(DataCollectionMiddleware)
 
 # ── Routers ───────────────────────────────────────────────────────────────────
-# ES-backed (production) routers
 app.include_router(routes_dashboard.router)
 app.include_router(incidents_router_v1)
 app.include_router(routes_settings.router)
+app.include_router(auth_router)
 
-# Prototype routers (Loghub log-file backed)
+# Prototype routers
 app.include_router(routes_network.router)
 app.include_router(routes_endpoints.router)
 app.include_router(incidents_router_proto)
@@ -202,5 +206,5 @@ async def health():
         "status":          "healthy",
         "elasticsearch":   "connected"  if es_healthy else "disconnected",
         "anomaly_model":   "trained"    if (anomaly_detector and anomaly_detector.is_trained) else "untrained",
-        "prototype_mode":  True,   # log-file endpoints active
+        "prototype_mode":  True,
     }

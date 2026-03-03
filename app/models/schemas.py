@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field, IPvAnyAddress
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from enum import Enum
-
+from pydantic import EmailStr
 
 # ─────────────────────────────────────────────
 # Enums
@@ -77,32 +77,66 @@ class AnomalyResult(BaseModel):
 # ─────────────────────────────────────────────
 
 class IncidentBase(BaseModel):
-    source_ip: str
-    app_name: str
+    """Base incident model with camelCase fields matching frontend."""
+    source_ip: str = Field(..., alias="sourceIp")
+    app_name: str = Field(..., alias="targetApp")
     risk_level: RiskLevel
     anomaly_count: int = 0
     first_seen: datetime
     last_seen: datetime
     status: IncidentStatus = IncidentStatus.OPEN
 
+    class Config:
+        populate_by_name = True  # Allow both snake_case and camelCase
+        from_attributes = True
 
-class IncidentCreate(IncidentBase):
+
+class IncidentCreate(BaseModel):
+    """Incident creation model with camelCase fields."""
+    id: str
+    event_name: str = Field(..., alias="eventName")
+    timestamp: str
+    severity: str  # 'Critical' | 'High' | 'Medium' | 'Low' | 'Healthy'
+    source_ip: str = Field(..., alias="sourceIp")
+    dest_ip: str = Field(..., alias="destIp")
+    target_app: str = Field(..., alias="targetApp")
+    status: str = Field(default="Active")  # 'Active' | 'Contained' | 'Closed'
+    event_details: str = Field(default="", alias="eventDetails")
     raw_logs: List[Dict[str, Any]] = Field(default_factory=list)
     anomaly_results: List[AnomalyResult] = Field(default_factory=list)
 
+    class Config:
+        populate_by_name = True
+        from_attributes = True
 
-class IncidentResponse(IncidentBase):
-    incident_id: str
+
+class IncidentResponse(BaseModel):
+    """Incident response model with camelCase fields matching frontend."""
+    id: str
+    event_name: str = Field(..., alias="eventName")
+    timestamp: str
+    severity: str
+    source_ip: str = Field(..., alias="sourceIp")
+    dest_ip: str = Field(..., alias="destIp")
+    target_app: str = Field(..., alias="targetApp")
+    status: str  # 'Active' | 'Contained' | 'Closed'
+    event_details: str = Field(default="", alias="eventDetails")
+    risk_level: Optional[RiskLevel] = None
+    anomaly_count: int = 0
     containment_status: ContainmentStatus = ContainmentStatus.NONE
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
     class Config:
+        populate_by_name = True
         from_attributes = True
 
 
 class IncidentListResponse(BaseModel):
     total: int
     incidents: List[IncidentResponse]
+
+    class Config:
+        from_attributes = True
 
 
 # ─────────────────────────────────────────────
@@ -134,7 +168,7 @@ class SOCBriefing(BaseModel):
         description="MITRE ATT&CK tactics the LLM matched"
     )
     generated_at: datetime = Field(default_factory=datetime.utcnow)
-    model_used: str
+    llm_model_used: str
 
 
 # ─────────────────────────────────────────────
@@ -284,3 +318,344 @@ class RecentIncidentsResponse(BaseModel):
     incidents:   List[RecentIncident]
     total:       int
     generated_at: str
+
+
+# ─────────────────────────────────────────────
+# Dashboard Data Schemas (Matching Frontend)
+# ─────────────────────────────────────────────
+
+class TimeSeriesData(BaseModel):
+    """Time series chart data point."""
+    name: str
+    value: Optional[float] = None
+    requests: Optional[int] = None
+    errors: Optional[int] = None
+    latency: Optional[float] = None
+
+    class Config:
+        extra = "allow"  # Allow additional fields for flexible chart data
+
+
+class AppHealth(BaseModel):
+    """Application health status for overview page."""
+    id: str
+    name: str
+    load: str
+    status: str  # 'Healthy' | 'Warning' | 'Critical'
+    status_text: Optional[str] = Field(default=None, alias="statusText")
+    action: str  # 'View Traffic' | 'Apply Hard Limit' | 'Isolate DB'
+
+    class Config:
+        populate_by_name = True
+        from_attributes = True
+
+
+class ThreatAnomaly(BaseModel):
+    """Threat anomaly for overview page."""
+    id: str
+    severity: str  # 'Critical' | 'High' | 'Medium' | 'Low' | 'Healthy'
+    target_app: str = Field(..., alias="targetApp")
+    source: str
+    issue: str
+    actions: List[str] = Field(default_factory=list)
+
+    class Config:
+        populate_by_name = True
+        from_attributes = True
+
+
+class MicroservicePosition(BaseModel):
+    """Position for microservice node."""
+    top: str
+    left: str
+
+
+class Microservice(BaseModel):
+    """Microservice node for topology view."""
+    id: str
+    name: str
+    status: str  # 'Healthy' | 'Failing'
+    position: MicroservicePosition
+    connections: List[str] = Field(default_factory=list)
+
+
+class OverviewData(BaseModel):
+    """Overview page dashboard data."""
+    app_health: List[AppHealth] = Field(..., alias="appHealth")
+    threat_anomalies: List[ThreatAnomaly] = Field(..., alias="threatAnomalies")
+    microservices: List[Microservice]
+
+    class Config:
+        populate_by_name = True
+
+
+# ─────────────────────────────────────────────
+# API Monitoring Page
+# ─────────────────────────────────────────────
+
+class ApiRoute(BaseModel):
+    """API route for monitoring."""
+    id: int
+    app: str
+    path: str
+    method: str
+    cost: float
+    trend: float
+    action: str
+
+
+class ApiMonitoringData(BaseModel):
+    """API monitoring dashboard data."""
+    api_calls_today: int = Field(..., alias="apiCallsToday")
+    blocked_requests: int = Field(..., alias="blockedRequests")
+    avg_latency: float = Field(..., alias="avgLatency")
+    estimated_cost: float = Field(..., alias="estimatedCost")
+    api_usage_chart: List[TimeSeriesData] = Field(..., alias="apiUsageChart")
+    api_routing: List[ApiRoute] = Field(..., alias="apiRouting")
+
+    class Config:
+        populate_by_name = True
+
+
+# ─────────────────────────────────────────────
+# Network Traffic Page
+# ─────────────────────────────────────────────
+
+class NetworkAnomalyFrontend(BaseModel):
+    """Network anomaly with camelCase for frontend (different from backend NetworkAnomaly)."""
+    id: int
+    source_endpoint: str = Field(..., alias="sourceEndpoint")
+    target_app: str = Field(..., alias="targetApp")
+    port: int
+    type: str
+
+    class Config:
+        populate_by_name = True
+        from_attributes = True
+
+
+class NetworkTrafficData(BaseModel):
+    """Network traffic dashboard data."""
+    bandwidth: float
+    active_connections: int = Field(..., alias="activeConnections")
+    dropped_packets: int = Field(..., alias="droppedPackets")
+    network_anomalies: List[NetworkAnomalyFrontend] = Field(..., alias="networkAnomalies")
+
+    class Config:
+        populate_by_name = True
+
+
+# ─────────────────────────────────────────────
+# Endpoint Security Page
+# ─────────────────────────────────────────────
+
+class OsDistribution(BaseModel):
+    """OS distribution chart data."""
+    name: str
+    value: int
+    fill: str
+
+
+class AlertTypeDistribution(BaseModel):
+    """Alert type distribution chart data."""
+    name: str
+    value: int
+    fill: str
+
+
+class WazuhEvent(BaseModel):
+    """Wazuh security event."""
+    id: int
+    workstation_id: str = Field(..., alias="workstationId")
+    employee: str
+    avatar: str
+    alert: str
+    severity: str  # 'Critical' | 'High' | 'Medium' | 'Low' | 'Healthy'
+
+    class Config:
+        populate_by_name = True
+        from_attributes = True
+
+
+class EndpointSecurityData(BaseModel):
+    """Endpoint security dashboard data."""
+    monitored_laptops: int = Field(..., alias="monitoredLaptops")
+    offline_devices: int = Field(..., alias="offlineDevices")
+    malware_alerts: int = Field(..., alias="malwareAlerts")
+    os_distribution: List[OsDistribution] = Field(..., alias="osDistribution")
+    alert_types: List[AlertTypeDistribution] = Field(..., alias="alertTypes")
+    wazuh_events: List[WazuhEvent] = Field(..., alias="wazuhEvents")
+
+    class Config:
+        populate_by_name = True
+
+
+# ─────────────────────────────────────────────
+# DB Monitoring Page
+# ─────────────────────────────────────────────
+
+class SuspiciousActivity(BaseModel):
+    """Suspicious database activity."""
+    id: int
+    app: str
+    user: str
+    type: str
+    table: str
+    reason: str
+
+
+class DbMonitoringData(BaseModel):
+    """Database monitoring dashboard data."""
+    active_connections: int = Field(..., alias="activeConnections")
+    avg_query_latency: float = Field(..., alias="avgQueryLatency")
+    data_export_volume: float = Field(..., alias="dataExportVolume")
+    operations_chart: List[TimeSeriesData] = Field(..., alias="operationsChart")
+    suspicious_activity: List[SuspiciousActivity] = Field(..., alias="suspiciousActivity")
+
+    class Config:
+        populate_by_name = True
+
+
+# ─────────────────────────────────────────────
+# Quarantined Endpoints
+# ─────────────────────────────────────────────
+
+class QuarantinedEndpoint(BaseModel):
+    """Quarantined endpoint for security response."""
+    id: str
+    hostname: str
+    quarantined_at: str = Field(..., alias="quarantinedAt")
+    reason: str
+
+    class Config:
+        populate_by_name = True
+        from_attributes = True
+
+
+# ─────────────────────────────────────────────
+# Reports Page
+# ─────────────────────────────────────────────
+
+class ScheduledReport(BaseModel):
+    """Scheduled report configuration."""
+    id: str
+    title: str
+    schedule: str
+    is_active: bool = Field(..., alias="isActive")
+
+    class Config:
+        populate_by_name = True
+        from_attributes = True
+
+
+class RecentDownload(BaseModel):
+    """Recently generated report download."""
+    id: str
+    name: str
+    generated: str
+    url: str
+
+    class Config:
+        from_attributes = True
+
+class SignupRequest(BaseModel):
+    email: EmailStr
+    password: str
+    full_name: str  # Required - matches frontend SignupData
+    role: Optional[str] = "analyst"  # Optional, defaults to "analyst"
+
+
+class SignupResponse(BaseModel):
+    user_id: int  # Changed from str to int to match DB
+    email: EmailStr
+    full_name: str
+    role: str
+    message: str = "Account created successfully. You may now log in."
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+    class Config:
+        from_attributes = True
+
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    refresh_token: Optional[str] = None
+    token_type: str = "bearer"
+    expires_in: int = 7200  # 2 hours in seconds - matches JWT expiry
+    role: str  # Added for frontend
+    full_name: str  # Added for frontend
+
+    class Config:
+        from_attributes = True
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ForgotPasswordResponse(BaseModel):
+    message: str = "If the account exists, a reset link has been sent."
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
+
+
+class ResetPasswordResponse(BaseModel):
+    message: str = "Password reset successfully"
+    password_updated: bool = True
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class UserProfile(BaseModel):
+    id: int
+    email: EmailStr
+    full_name: str
+    first_name: str = ""  # Added for frontend compatibility
+    last_name: str = ""  # Added for frontend compatibility
+    phone_number: str = ""  # Added for frontend
+    timezone: str = "UTC"  # Added for frontend
+    enable_2fa: bool = False  # Added for frontend
+    role: str  # Added for frontend
+    is_active: bool = True
+    created_at: datetime
+    last_login: Optional[datetime] = None  # Added
+
+    class Config:
+        from_attributes = True
+
+
+# ─────────────────────────────────────────────
+# Team / User Management (Settings Page)
+# ─────────────────────────────────────────────
+
+class TeamUser(BaseModel):
+    """User representation for team management in settings page."""
+    id: int
+    name: str  # Frontend uses 'name' not 'full_name'
+    email: EmailStr
+    role: str  # "Global Admin" | "Tier 1 Analyst" etc.
+    scope: List[str] = Field(default_factory=list)
+    avatar: str = ""
+    status: str = "Active"  # "Active" | "Invite Pending"
+
+    class Config:
+        from_attributes = True
+
+
+class AccountActivity(BaseModel):
+    """User account activity log entry."""
+    id: str
+    date_time: str  # Frontend uses dateTime (camelCase in JSON)
+    ip: str
+    location: str
+    status: str
+
+    class Config:
+        from_attributes = True

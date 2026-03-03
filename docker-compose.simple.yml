@@ -1,43 +1,135 @@
-version: '3.8'
 services:
-  # ATLAS Backend Service
+  # -------------------------
+  # PostgreSQL
+  # -------------------------
+  postgres:
+    image: postgres:15
+    container_name: atlas-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: root!123
+      POSTGRES_DB: atlas_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      - atlas-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # -------------------------
+  # Redis
+  # -------------------------
+  redis:
+    image: redis:alpine
+    container_name: atlas-redis
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    networks:
+      - atlas-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # -------------------------
+  # Elasticsearch
+  # -------------------------
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.10.2
+    container_name: atlas-elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms1g -Xmx1g
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    ports:
+      - "9201:9200"
+    restart: unless-stopped
+    networks:
+      - atlas-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9200"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  # -------------------------
+  # ATLAS Backend
+  # -------------------------
   atlas-backend:
     build:
       context: ./atlas-backend
       dockerfile: Dockerfile
+    container_name: atlas-backend
     ports:
       - "8000:8000"
     environment:
-      - APP_NAME=ATLAS
-      - APP_ENV=development
-      - DEBUG=true
-      - ELASTIC_HOST=http://localhost:9200
-      - ELASTIC_USERNAME=elastic
-      - ELASTIC_PASSWORD=changeme
-      - REDIS_HOST=localhost
-      - REDIS_PORT=6379
-      - OLLAMA_BASE_URL=http://localhost:11434
-      - WAZUH_API_URL=https://localhost:55000
+      APP_NAME: ATLAS
+      APP_ENV: production
+      DEBUG: "false"
+
+      DATABASE_URL: postgresql+asyncpg://postgres:root!123@postgres:5432/atlas_db
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      ELASTIC_HOST: http://elasticsearch:9200
+
+      JWT_SECRET_KEY: change-me-to-a-strong-secret
+      JWT_ALGORITHM: HS256
+      JWT_EXPIRE_HOURS: 2
+
+      OLLAMA_BASE_URL: http://ollama:11434
+      WAZUH_API_URL: https://wazuh:55000
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+
     restart: unless-stopped
     networks:
       - atlas-network
 
-  # ATLAS Frontend Service
+  # -------------------------
+  # ATLAS Frontend
+  # -------------------------
   atlas-frontend:
     build:
       context: ./atlas-fron-end
       dockerfile: Dockerfile
+    container_name: atlas-frontend
     ports:
       - "3000:3000"
     environment:
-      - NEXT_PUBLIC_ATLAS_BACKEND_URL=http://atlas-backend:8000
-      - NODE_ENV=production
+      NEXT_PUBLIC_ATLAS_BACKEND_URL: http://localhost:8000
+      NODE_ENV: production
     depends_on:
-      - atlas-backend
+      atlas-backend:
+        condition: service_started
     restart: unless-stopped
     networks:
       - atlas-network
 
+# -------------------------
+# Networks
+# -------------------------
 networks:
   atlas-network:
     driver: bridge
+
+# -------------------------
+# Volumes (Persistent Storage)
+# -------------------------
+volumes:
+  postgres_data:
+  redis_data:
+  es_data:

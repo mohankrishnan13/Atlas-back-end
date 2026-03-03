@@ -15,7 +15,17 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from app.integrations.elastic_client import ElasticClient
 from app.integrations.redis_client import RedisClient
 from app.ml.anomaly_engine import AnomalyDetector
-from app.models.schemas import APIUsageStat, DBLatencyStat, DashboardSummary
+from app.models.schemas import (
+    APIUsageStat, 
+    DBLatencyStat, 
+    DashboardSummary,
+    IncidentListResponse,
+    OverviewData,
+    ApiMonitoringData,
+    NetworkTrafficData,
+    EndpointSecurityData,
+    DbMonitoringData,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -133,28 +143,40 @@ async def trigger_model_training(
     return detector.train_baseline(training_data)
 
 
-@router.get("/overview")
+@router.get("/overview", response_model=OverviewData)
 async def get_overview_data(
     elastic: ElasticClient = Depends(get_elastic),
     redis: RedisClient = Depends(get_redis),
     detector: AnomalyDetector = Depends(get_detector),
-) -> Dict[str, Any]:
+) -> OverviewData:
     try:
-        redis_metrics = await redis.get_metrics_summary()
-        api_usage_stats = await elastic.get_api_usage_stats("atlas-backend", hours=24)
+        # Safely get redis metrics with defaults
+        redis_metrics = await redis.get_metrics_summary() or {}
+        total_requests = redis_metrics.get("total_requests") or 0
+        error_rate = redis_metrics.get("error_rate") or 0
+        total_errors = redis_metrics.get("total_errors") or 0
+        avg_latency_ms = redis_metrics.get("avg_latency_ms") or 0
+        
+        api_usage_stats = await elastic.get_api_usage_stats("atlas-backend", hours=24) or []
         es_summary = await elastic.get_dashboard_summary()
 
         api_requests_chart = []
-        for stat in api_usage_stats:
-            hour = datetime.fromisoformat(
-                stat["timestamp"].replace("Z", "+00:00")
-            ).strftime("%H:00")
-            api_requests_chart.append({
-                "name": hour,
-                "requests": stat["request_count"],
-                "errors": stat["error_count"],
-                "latency": stat["avg_latency_ms"],
-            })
+        for stat in api_usage_stats or []:  # Handle None case
+            if not isinstance(stat, dict):
+                continue
+            try:
+                hour = datetime.fromisoformat(
+                    stat.get("timestamp", "").replace("Z", "+00:00")
+                ).strftime("%H:00")
+                api_requests_chart.append({
+                    "name": hour,
+                    "requests": stat.get("request_count", 0),
+                    "errors": stat.get("error_count", 0),
+                    "latency": stat.get("avg_latency_ms", 0),
+                })
+            except (ValueError, AttributeError) as e:
+                logger.warning(f"Invalid timestamp in API usage stats: {stat.get('timestamp')}")
+                continue
 
         since = datetime.utcnow() - timedelta(hours=24)
         system_anomalies = []
@@ -239,11 +261,11 @@ async def get_overview_data(
         }
 
 
-@router.get("/api-monitoring")
+@router.get("/api-monitoring", response_model=ApiMonitoringData)
 async def get_api_monitoring_data(
     elastic: ElasticClient = Depends(get_elastic),
     redis: RedisClient = Depends(get_redis),
-) -> Dict[str, Any]:
+) -> ApiMonitoringData:
     try:
         api_usage_stats = await elastic.get_api_usage_stats("atlas-backend", hours=24)
         api_usage_chart = []
@@ -254,7 +276,7 @@ async def get_api_monitoring_data(
             api_usage_chart.append({
                 "name": hour,
                 "requests": stat["request_count"],
-                "errors": stat["error_count"],     # FIX #5
+                "errors": stat["error_count"],
                 "latency": stat["avg_latency_ms"],
             })
 
@@ -290,12 +312,12 @@ async def get_api_monitoring_data(
             pass
 
         return {
-            "apiCallsToday":  redis_metrics.get("total_requests", 0),
-            "blockedRequests": redis_metrics.get("total_errors", 0),
-            "avgLatency":     redis_metrics.get("avg_latency_ms", 0),
-            "estimatedCost":  len(api_routing) * 0.01,
-            "apiUsageChart":  api_usage_chart,
-            "apiRouting":     api_routing,
+            "apiCallsToday":  total_requests,
+            "blockedRequests": total_errors,
+            "avgLatency":     avg_latency_ms,
+            "estimatedCost":  len(api_routing) * 0.01 if api_routing else 0,
+            "apiUsageChart":  api_usage_chart or [],
+            "apiRouting":     api_routing or [],
         }
     except Exception as e:
         logger.error(f"API monitoring fetch failed: {e}", exc_info=True)
@@ -303,11 +325,11 @@ async def get_api_monitoring_data(
                 "estimatedCost": 0, "apiUsageChart": [], "apiRouting": []}
 
 
-@router.get("/network-traffic")
+@router.get("/network-traffic", response_model=NetworkTrafficData)
 async def get_network_traffic_data(
     elastic: ElasticClient = Depends(get_elastic),
     redis: RedisClient = Depends(get_redis),
-) -> Dict[str, Any]:
+) -> NetworkTrafficData:
     try:
         since = datetime.utcnow() - timedelta(hours=24)
         bandwidth_data: List[Dict] = []
@@ -342,16 +364,29 @@ async def get_network_traffic_data(
                 },
             )
             for b in resp["aggregations"]["bandwidth"]["buckets"]:
-                bandwidth_data.append({
-                    "hour": datetime.fromisoformat(b["key_as_string"].replace("Z", "+00:00")).strftime("%H:00"),
-                    "bandwidth": round(b["avg_bandwidth"]["value"] or 0, 2),
-                })
+                try:
+                    hour = datetime.fromisoformat(b["key_as_string"].replace("Z", "+00:00")).strftime("%H:00")
+                    bandwidth_value = b.get("avg_bandwidth", {}).get("value")
+                    bandwidth_data.append({
+                        "hour": hour,
+                        "bandwidth": round(bandwidth_value if bandwidth_value is not None else 0, 2),
+                    })
+                except (ValueError, AttributeError) as e:
+                    logger.warning(f"Invalid timestamp in bandwidth data: {b.get('key_as_string')}")
+                    continue
             for b in resp["aggregations"]["connections"]["buckets"]:
-                connections_data.append({
-                    "hour": datetime.fromisoformat(b["key_as_string"].replace("Z", "+00:00")).strftime("%H:00"),
-                    "connections": int(b["active_connections"]["value"] or 0),
-                    "dropped":     int(b["dropped_packets"]["value"]    or 0),
-                })
+                try:
+                    hour = datetime.fromisoformat(b["key_as_string"].replace("Z", "+00:00")).strftime("%H:00")
+                    active_conn = b.get("active_connections", {}).get("value")
+                    dropped = b.get("dropped_packets", {}).get("value")
+                    connections_data.append({
+                        "hour": hour,
+                        "connections": int(active_conn if active_conn is not None else 0),
+                        "dropped":     int(dropped if dropped is not None else 0),
+                    })
+                except (ValueError, AttributeError) as e:
+                    logger.warning(f"Invalid timestamp in connections data: {b.get('key_as_string')}")
+                    continue
             for b in resp["aggregations"]["anomalies"]["top_ips"]["buckets"]:
                 if b["doc_count"] > 5:
                     network_anomalies.append({
@@ -377,15 +412,14 @@ async def get_network_traffic_data(
                 "networkAnomalies": [], "bandwidthChart": [], "connectionsChart": []}
 
 
-@router.get("/endpoint-security")
+@router.get("/endpoint-security", response_model=EndpointSecurityData)
 async def get_endpoint_security_data(
     elastic: ElasticClient = Depends(get_elastic),
-) -> Dict[str, Any]:
+) -> EndpointSecurityData:
     """
     NOTE: Returns simulated data in prototype phase.
     TODO [PRODUCTION]: Replace with real Wazuh + ES queries.
     """
-    # FIX #1 — random is now imported; these calls no longer raise NameError
     os_distribution = [
         {"name": "Windows", "value": random.randint(60, 80), "fill": "#3b82f6"},
         {"name": "macOS",   "value": random.randint(15, 25), "fill": "#10b981"},
@@ -425,11 +459,11 @@ async def get_endpoint_security_data(
     }
 
 
-@router.get("/db-monitoring")
+@router.get("/db-monitoring", response_model=DbMonitoringData)
 async def get_db_monitoring_data(
     elastic: ElasticClient = Depends(get_elastic),
     redis: RedisClient = Depends(get_redis),
-) -> Dict[str, Any]:
+) -> DbMonitoringData:
     try:
         db_latency_stats = await elastic.get_db_query_latency(hours=24)
         since = datetime.utcnow() - timedelta(hours=24)
@@ -501,10 +535,10 @@ async def get_db_monitoring_data(
                 "operationsChart": [], "suspiciousActivity": []}
 
 
-@router.get("/incidents")
+@router.get("/incidents", response_model=IncidentListResponse)
 async def get_incidents_data(
     elastic: ElasticClient = Depends(get_elastic),
-) -> Dict[str, Any]:
+) -> IncidentListResponse:
     try:
         resp = await elastic.list_incidents(page=1, size=50)
         incidents = [

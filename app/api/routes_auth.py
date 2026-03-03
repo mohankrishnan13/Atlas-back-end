@@ -75,61 +75,121 @@ async def signup(
     Creates a new ATLAS user account.
 
     Steps:
-    1. Validate email uniqueness — 400 if already registered.
-    2. Hash the plaintext password with bcrypt (salt auto-generated).
-    3. Persist the user record to PostgreSQL.
-    4. Return a 201 Created response with the safe user summary.
+    1. Validate input format (email, password strength, full_name length).
+    2. Validate email uniqueness — 400 if already registered.
+    3. Hash the plaintext password with bcrypt (salt auto-generated).
+    4. Persist the user record to PostgreSQL.
+    5. Return a 201 Created response with the safe user summary.
 
     The plaintext password lives in memory only for the duration of this
     function call and is GC'd immediately after `get_password_hash` returns.
     """
-    # Step 1: Check for duplicate email
-    result = await db.execute(
-        select(User).where(User.email == payload.email.lower().strip())
-    )
-    existing_user = result.scalar_one_or_none()
-
-    if existing_user:
-        # Don't distinguish "email exists" from "email exists but inactive" —
-        # that would let attackers map which accounts are active.
+    
+    # ── Input Validation ─────────────────────────────────────────────────────
+    
+    # Sanitize and validate email
+    email = payload.email.lower().strip()
+    if not email or "@" not in email or "." not in email.split("@")[-1]:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="An account with this email address already exists.",
+            detail="Invalid email format. Please provide a valid email address.",
         )
-
-    # Validate role — only known roles are accepted to prevent privilege escalation
+    
+    # Validate full_name is not empty and reasonable length
+    full_name = payload.full_name.strip() if payload.full_name else ""
+    if not full_name:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Full name is required.",
+        )
+    if len(full_name) < 2:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Full name must be at least 2 characters long.",
+        )
+    if len(full_name) > 100:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Full name must not exceed 100 characters.",
+        )
+    
+    # Validate password strength
+    password = payload.password
+    if not password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password is required.",
+        )
+    if len(password) < 8:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password must be at least 8 characters long.",
+        )
+    if len(password) > 128:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password must not exceed 128 characters.",
+        )
+    
+    # Validate role
     allowed_roles = {"analyst", "lead", "admin"}
-    role = payload.role.lower().strip()
+    role = (payload.role or "analyst").lower().strip()
     if role not in allowed_roles:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid role '{role}'. Must be one of: {sorted(allowed_roles)}",
         )
+    
+    # ── Database Operations ──────────────────────────────────────────────────
+    
+    try:
+        # Check for duplicate email
+        result = await db.execute(select(User).where(User.email == email))
+        existing_user = result.scalar_one_or_none()
 
-    # Step 2: Hash the password
-    hashed = get_password_hash(payload.password)
+        if existing_user:
+            # Don't distinguish "email exists" from "email exists but inactive"
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="An account with this email address already exists.",
+            )
 
-    # Step 3: Create and persist the user
-    new_user = User(
-        email=payload.email.lower().strip(),
-        full_name=payload.full_name.strip(),
-        role=role,
-        hashed_password=hashed,
-        is_active=True,
-        failed_login_attempts=0,
-    )
-    db.add(new_user)
-    # Commit is handled by get_db's context manager — explicit flush ensures
-    # the row is written so we can read back the auto-generated `id` if needed.
-    await db.flush()
+        # Hash the password
+        hashed = get_password_hash(password)
 
-    logger.info(f"New user registered: {new_user.email} | role: {new_user.role}")
+        # Create and persist the user
+        new_user = User(
+            email=email,
+            full_name=full_name,
+            role=role,
+            hashed_password=hashed,
+            is_active=True,
+            failed_login_attempts=0,
+        )
+        db.add(new_user)
+        
+        # Flush to get the auto-generated id
+        await db.flush()
+        await db.refresh(new_user)
 
-    return SignupResponse(
-        message="Account created successfully. You may now log in.",
-        email=new_user.email,
-        role=new_user.role,
-    )
+        logger.info(f"New user registered: {new_user.email} | role: {new_user.role} | id: {new_user.id}")
+
+        return SignupResponse(
+            user_id=new_user.id,
+            message="Account created successfully. You may now log in.",
+            email=new_user.email,
+            full_name=new_user.full_name,
+            role=new_user.role,
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Signup failed for email {email}: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An error occurred while creating your account. Please try again.",
+        )
 
 
 # ─── B. Login ─────────────────────────────────────────────────────────────────
@@ -159,9 +219,22 @@ async def login(
     """
     _GENERIC_401 = "Invalid email or password."
 
+    # ── Input Validation ─────────────────────────────────────────────────────
+    
+    # Validate email format
+    email = payload.email.lower().strip() if payload.email else ""
+    if not email or "@" not in email or "." not in email.split("@")[-1]:
+        logger.warning(f"Login attempt with invalid email format: {payload.email}")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=_GENERIC_401)
+    
+    # Validate password is provided
+    if not payload.password:
+        logger.warning("Login attempt with empty password")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=_GENERIC_401)
+
     # Step 1: Find user
     result = await db.execute(
-        select(User).where(User.email == payload.email.lower().strip())
+        select(User).where(User.email == email)
     )
     user: Optional[User] = result.scalar_one_or_none()
 
@@ -224,6 +297,7 @@ async def login(
     return TokenResponse(
         access_token=token,
         token_type="bearer",
+        expires_in=7200,  # 2 hours - matches JWT expiry in security.py
         role=user.role,
         full_name=user.full_name,
     )
