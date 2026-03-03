@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     elastic_password:        str = "changeme"
     elastic_index_logs:      str = "atlas-logs-*"
     elastic_index_incidents: str = "atlas-incidents"
+    elastic_verify_certs:    bool = True  # Set to False only for development
 
     # Redis
     redis_host:     str = "localhost"

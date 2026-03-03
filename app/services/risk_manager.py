@@ -4,12 +4,6 @@ services/risk_manager.py
 Implements Progressive Risk Containment — a graduated response model where
 containment severity escalates proportionally to evidence accumulation.
 
-BUG FIX APPLIED:
-- [FIX #4] Removed `.decode()` calls in list_contained_ips().
-  The Redis client is initialised with `decode_responses=True`, which means
-  all keys and values are already returned as plain Python str objects.
-  Calling `.decode()` on a str raises AttributeError at runtime.
-
 Why progressive rather than binary block/allow:
 - Tier 1 (Warning)     → SOC dashboard notification only
 - Tier 2 (Soft Limit)  → API Gateway rate-limit header signal
@@ -108,11 +102,7 @@ class ProgressiveContainmentManager:
         """Returns all IPs currently under any form of containment."""
         if self._redis:
             results = []
-            # FIX #4 — decode_responses=True makes all Redis values plain str.
-            # The previous code called key.decode() which raised AttributeError
-            # because str objects don't have a .decode() method.
             async for key in self._redis.scan_iter("*:status"):
-                # key is already a str — no .decode() needed
                 status = await self._redis.get(key)
                 if status and status != ContainmentStatus.NONE:
                     # key format: "{ip}:{app}:status"
@@ -122,7 +112,7 @@ class ProgressiveContainmentManager:
                         results.append({
                             "ip":     parts[0],
                             "app":    parts[1],
-                            "status": status,  # also already a str — no .decode()
+                            "status": status,
                         })
             return results
         else:

@@ -3,28 +3,20 @@ api/routes_dashboard.py
 
 Dashboard endpoints that power the SOC frontend charts and KPI widgets.
 These are read-only aggregation endpoints — they don't mutate state.
-
-BUG FIXES APPLIED:
-- [FIX #1] Added missing `import random` (caused NameError in /endpoint-security)
-- [FIX #2] Moved `logger` definition to module top (was at bottom of file, causing
-           NameError when trigger_model_training() called logger.info())
-- [FIX #5] Fixed error_count KeyError — routes now consistently use "error_count"
-           key that elastic_client actually returns.
 """
 
 import logging
-import random                                  # FIX #1 — was completely missing
+import random
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta
 
+import pandas as pd  # Import at module level for better code organization
 from fastapi import APIRouter, Depends, HTTPException, Query
 from app.integrations.elastic_client import ElasticClient
 from app.integrations.redis_client import RedisClient
 from app.ml.anomaly_engine import AnomalyDetector
 from app.models.schemas import APIUsageStat, DBLatencyStat, DashboardSummary
 
-# FIX #2 — logger must be at module TOP, not bottom of file.
-# Previously defined after all functions, so any early call raised NameError.
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/dashboard", tags=["Dashboard"])
@@ -129,8 +121,6 @@ async def trigger_model_training(
     detector: AnomalyDetector = Depends(get_detector),
     elastic: ElasticClient = Depends(get_elastic),
 ) -> Dict[str, Any]:
-    import pandas as pd
-    # FIX #2 — logger now defined at top, so this call no longer raises NameError
     logger.info("Fetching training data from Elasticsearch...")
     training_data = pd.DataFrame(
         columns=[
@@ -162,7 +152,7 @@ async def get_overview_data(
             api_requests_chart.append({
                 "name": hour,
                 "requests": stat["request_count"],
-                "errors": stat["error_count"],     # FIX #5 — correct key from elastic_client
+                "errors": stat["error_count"],
                 "latency": stat["avg_latency_ms"],
             })
 

@@ -33,7 +33,7 @@ class ElasticClient:
         self._client = AsyncElasticsearch(
             hosts=[settings.elastic_host],
             basic_auth=(settings.elastic_username, settings.elastic_password),
-            verify_certs=False,  # Disable for dev; enable in prod with CA cert
+            verify_certs=settings.elastic_verify_certs,
             retry_on_timeout=True,
             max_retries=3,
         )

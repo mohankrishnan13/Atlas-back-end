@@ -1,19 +1,10 @@
 """
 middleware/logging.py
 
-BUG FIX APPLIED:
-- [FIX #3] The original code called add_data_collection_middleware() at module
-  import time (before lifespan ran), so elastic_client and redis_client were
-  still None and the middleware was never registered.
-
-  Fix: The middleware now reads clients from request.app.state rather than
-  capturing them at construction time. Clients are set on app.state inside
-  the lifespan context manager (after they are fully initialised), and the
-  middleware is registered once at app-build time — before lifespan — using
-  a lightweight lazy-accessor pattern.
-
-  This is the canonical Starlette pattern for middleware that depends on
-  resources that are not available until startup.
+Real-time API metrics collection middleware.
+Clients are retrieved lazily from request.app.state rather than being 
+injected at construction time, enabling proper Starlette middleware 
+registration before the lifespan context runs.
 """
 
 import time
@@ -47,7 +38,7 @@ class DataCollectionMiddleware(BaseHTTPMiddleware):
         if request.url.path in _SKIP_LOG_PATHS:
             return await call_next(request)
 
-        # FIX #3 — lazy access via app.state; both clients may be None if
+        # Access clients lazily from app.state; both may be None if
         # ES/Redis are unavailable, and we degrade gracefully in each helper.
         elastic_client = getattr(request.app.state, "elastic_client", None)
         redis_client   = getattr(request.app.state, "redis_client",   None)

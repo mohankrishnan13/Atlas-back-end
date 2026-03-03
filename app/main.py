@@ -1,18 +1,8 @@
 """
 main.py — ATLAS FastAPI Application
 
-BUG FIX APPLIED:
-- [FIX #3] DataCollectionMiddleware is now registered BEFORE lifespan runs
-  (correct Starlette ordering). Clients are set on app.state inside lifespan,
-  and the middleware reads them lazily via request.app.state on each request.
-  The previous approach called add_data_collection_middleware() at module-load
-  time when elastic_client / redis_client were still None, so the middleware
-  was never actually added.
-
-New routers registered:
-- routes_network   → GET /api/metrics/network
-- routes_endpoints → GET /api/metrics/endpoints
-- routes_incidents.router_proto → GET /api/incidents/recent
+Application lifespan manages initialization and shutdown of all service clients.
+Middleware is registered at app-build time before lifespan runs.
 """
 
 import logging
@@ -164,10 +154,7 @@ app.add_middleware(
 )
 
 # ── Data Collection Middleware ─────────────────────────────────────────────────
-# FIX #3 — Register the middleware HERE at app-build time (before lifespan),
-# which is the only valid Starlette registration window.  Clients are NOT passed
-# as constructor arguments; the middleware reads them lazily from app.state on
-# each request (set during lifespan above).
+# Register at app-build time; reads clients lazily from app.state on each request
 app.add_middleware(DataCollectionMiddleware)
 
 # ── Routers ───────────────────────────────────────────────────────────────────
